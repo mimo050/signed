@@ -1,5 +1,4 @@
 name: Resign IPA (Ad Hoc Multi-UDID)
-
 on:
   workflow_dispatch:
     inputs:
@@ -12,20 +11,16 @@ on:
       - 'uploads/*.ipa'
       - 'tools/**'
       - '.github/workflows/resign.yml'
-
 jobs:
   resign:
     runs-on: macos-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Decode Provisioning Profile
         run: |
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
           echo "${{ secrets.IOS_PROVISION_BASE64 }}" | base64 --decode > "$HOME/Library/MobileDevice/Provisioning Profiles/App.mobileprovision"
-
       - name: Create Temporary Keychain & Import P12
         run: |
           KEYCHAIN=build.keychain
@@ -36,27 +31,20 @@ jobs:
           security import cert.p12 -k "$KEYCHAIN" -P "${{ secrets.IOS_P12_PASSWORD }}" -T /usr/bin/codesign
           security list-keychains -d user -s "$KEYCHAIN" login.keychain
           security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
-
       - name: Ensure Tools Executable
         run: chmod +x tools/resign_ipa.sh
-
       - name: Pick IPA path
         id: pick
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             IPA="${{ github.event.inputs.ipa_path }}"
           else
-            # fallback to first IPA under uploads
             IPA="$(ls -1 uploads/*.ipa | head -n1)"
           fi
           echo "ipa=$IPA" >> $GITHUB_OUTPUT
           echo "Using IPA: $IPA"
-
       - name: Resign IPA
-        env:
-          SIGN_ID: ""
         run: |
-          # حاول استكشاف اسم الشهادة تلقائياً
           SIGN_ID="$(security find-identity -v -p codesigning | grep -oE 'iPhone Distribution:.*\)' | head -n1 || true)"
           if [ -z "$SIGN_ID" ]; then
             echo "Could not auto-detect signing identity. List identities:"
@@ -64,8 +52,6 @@ jobs:
             exit 1
           fi
           echo "Using signing identity: $SIGN_ID"
-
-          # نفّذ التوقيع: TEAMID/BUNDLEID ثابتة لك
           ./tools/resign_ipa.sh \
             "${{ steps.pick.outputs.ipa }}" \
             "$HOME/Library/MobileDevice/Provisioning Profiles/App.mobileprovision" \
@@ -73,7 +59,6 @@ jobs:
             "66856YQ2FS" \
             "com.xlop.myapp" \
             "./tools/entitlements.plist"
-
       - name: Upload Resigned IPA
         uses: actions/upload-artifact@v4
         with:

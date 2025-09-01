@@ -1,57 +1,28 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
-
-if [ $# -ne 6 ]; then
-  echo "Usage: $0 <ipa_path> <provision_path> <sign_identity> <team_id> <bundle_id> <entitlements_plist>" >&2
+if [[ $# -lt 5 ]]; then
+  echo "Usage: $0 <IPA_PATH> <PROVISION_PATH> <SIGN_ID> <TEAMID> <BUNDLEID> [ENTITLEMENTS_PLIST]" >&2
   exit 1
 fi
-
-IPA_PATH="$1"
-PROVISION="$2"
-SIGN_ID="$3"
-TEAM_ID="$4"
-BUNDLE_ID="$5"
-ENTITLEMENTS="$6"
-
-WORKDIR=$(mktemp -d)
-trap 'rm -rf "$WORKDIR"' EXIT
-
-echo "Unzipping IPA..."
-unzip -q "$IPA_PATH" -d "$WORKDIR"
-
-APP=$(find "$WORKDIR/Payload" -maxdepth 1 -name "*.app" -type d | head -n1)
-if [ -z "$APP" ]; then
-  echo "Could not find .app bundle in IPA" >&2
-  exit 1
+IPA="$1"; PROV="$2"; SIGN_ID="$3"; TEAMID="$4"; BUNDLEID="$5"; ENT="${6:-tools/entitlements.plist}"
+WORKDIR="$(mktemp -d -t resign-XXXX)"; trap 'rm -rf "$WORKDIR"' EXIT
+unzip -q "$IPA" -d "$WORKDIR"
+APPDIR="$(/usr/bin/find "$WORKDIR/Payload" -maxdepth 1 -name "*.app" -type d | head -n1)"
+cp "$PROV" "$APPDIR/embedded.mobileprovision"
+INFO_PLIST="$APPDIR/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLEID" "$INFO_PLIST" 2>/dev/null || \
+/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $BUNDLEID" "$INFO_PLIST"
+ENT_FIXED="$WORKDIR/entitlements.fixed.plist"; /usr/bin/sed -e "s/TEAMID/$TEAMID/g" -e "s/BUNDLEID/$BUNDLEID/g" "$ENT" > "$ENT_FIXED"
+if [[ -d "$APPDIR/Frameworks" ]]; then
+  find "$APPDIR/Frameworks" -type f \( -name "*.framework" -o -name "*.dylib" -o -name "*.so" \) -print0 | while IFS= read -r -d '' FW; do
+    codesign -f -s "$SIGN_ID" --timestamp=none "$FW"
+  done
 fi
-
-echo "Replacing provisioning profile..."
-cp "$PROVISION" "$APP/embedded.mobileprovision"
-
-echo "Updating Info.plist with bundle identifier..."
-/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :application-identifier $TEAM_ID.$BUNDLE_ID" "$APP/Info.plist" || true
-
-echo "Cleaning old signatures..."
-rm -rf "$APP/_CodeSignature"
-find "$APP" \( -name "*.framework" -o -name "*.dylib" \) | while IFS= read -r BUNDLE; do
-  rm -rf "$BUNDLE/_CodeSignature"
-done
-
-echo "Resigning frameworks and dylibs..."
-find "$APP" \( -name "*.framework" -o -name "*.dylib" \) | while IFS= read -r BUNDLE; do
-  codesign -fs "$SIGN_ID" --entitlements "$ENTITLEMENTS" "$BUNDLE"
-done
-
-echo "Resigning app..."
-codesign -fs "$SIGN_ID" --entitlements "$ENTITLEMENTS" "$APP"
-
-OUTPUT="${IPA_PATH%.ipa}-resigned.ipa"
-echo "Repacking IPA to $OUTPUT..."
-(
-  cd "$WORKDIR"
-  zip -qr "$OUTPUT" Payload
-)
-mv "$WORKDIR/$OUTPUT" "$(dirname "$IPA_PATH")/"
-
-echo "Done: $(dirname "$IPA_PATH")/${OUTPUT}"
+if [[ -d "$APPDIR/PlugIns" ]]; then
+  find "$APPDIR/PlugIns" -type d -name "*.appex" -print0 | while IFS= read -r -d '' APPEX; do
+    codesign -f -s "$SIGN_ID" --timestamp=none "$APPEX"
+  done
+fi
+codesign -f -s "$SIGN_ID" --entitlements "$ENT_FIXED" --timestamp=none "$APPDIR"
+codesign --verify --deep --strict "$APPDIR"
+( cd "$WORKDIR" && zip -qry "$(pwd)/$(basename "${IPA%.ipa}")-resigned.ipa" Payload )
