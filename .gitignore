@@ -1,0 +1,9 @@
+# IPA & local stuff
+*.ipa
+*.p12
+*.mobileprovision
+*.b64
+cert.p12
+
+# macOS junk
+.DS_Store
